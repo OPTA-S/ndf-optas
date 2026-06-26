@@ -114,7 +114,7 @@
     <button id="btnAgain" class="btn">Déposer d'autres reçus</button>
   </section>
 
-  <footer>OPTA-S · solution interne · v3</footer>
+  <footer>OPTA-S · solution interne · v4</footer>
 </div>
 
 <script>
@@ -194,28 +194,58 @@ $("clearChoice").onclick = ()=>{ CHOSEN=null; hide($("chosen")); $("activite").f
 
 /* ---------- FICHIERS (multiple) ---------- */
 $("filebox").onclick = ()=> $("file").click();
-$("file").onchange = () => {
-  const picked = Array.from($("file").files||[]);
-  let skipped = 0;
-  picked.forEach(f=>{
-    // contrôle des doublons : on ignore un fichier déjà présent (même nom + même taille)
-    if(FILES.some(x => x.name===f.name && x.size===f.size)){ skipped++; return; }
-    const reader = new FileReader();
-    reader.onload = e=>{
-      FILES.push({
-        b64: e.target.result.split(",")[1],   // base64 sans le préfixe data:
-        mime: f.type, name: f.name, size: f.size,
-        isImage: f.type.startsWith("image/"),
-        dataUrl: e.target.result
-      });
-      renderFiles();
-    };
-    reader.readAsDataURL(f);
+
+/* Ré-encode toute image (y compris HEIC iPhone) en JPEG via canvas, et la redimensionne.
+   → résout les formats refusés par l'IA (HEIC) et allège fortement le poids envoyé.
+   Les PDF passent tels quels. */
+function processFile(f){
+  return new Promise(resolve=>{
+    if(f.type && f.type.startsWith("image/")){
+      const img = new Image();
+      const url = URL.createObjectURL(f);
+      img.onload = ()=>{
+        const maxDim = 2000;
+        let w = img.naturalWidth, h = img.naturalHeight;
+        const scale = Math.min(1, maxDim/Math.max(w,h));
+        w = Math.max(1, Math.round(w*scale)); h = Math.max(1, Math.round(h*scale));
+        const cv = document.createElement("canvas"); cv.width=w; cv.height=h;
+        cv.getContext("2d").drawImage(img,0,0,w,h);
+        const dataUrl = cv.toDataURL("image/jpeg", 0.85);
+        URL.revokeObjectURL(url);
+        resolve({ b64:dataUrl.split(",")[1], mime:"image/jpeg",
+                  name:f.name.replace(/\.[^.]+$/,"")+".jpg", size:f.size,
+                  isImage:true, dataUrl });
+      };
+      img.onerror = ()=>{ URL.revokeObjectURL(url); resolve({ _error:f.name }); };
+      img.src = url;
+    } else {
+      const reader = new FileReader();
+      reader.onload = e=>resolve({ b64:e.target.result.split(",")[1], mime:f.type||"application/pdf",
+                                   name:f.name, size:f.size, isImage:false, dataUrl:e.target.result });
+      reader.onerror = ()=>resolve({ _error:f.name });
+      reader.readAsDataURL(f);
+    }
   });
-  if(skipped>0){
-    const m = $("formMsg"); m.className="msg show";
-    m.textContent = skipped===1 ? "Doublon ignoré (fichier déjà ajouté)." : skipped+" doublons ignorés (déjà ajoutés).";
-    setTimeout(()=>{ m.className="msg"; }, 3000);
+}
+
+$("file").onchange = async () => {
+  const picked = Array.from($("file").files||[]);
+  let skipped = 0, failed = 0;
+  for(const f of picked){
+    // contrôle des doublons : on ignore un fichier déjà présent (même nom + même taille)
+    if(FILES.some(x => x.size===f.size && (x.name===f.name || x.name===f.name.replace(/\.[^.]+$/,"")+".jpg"))){ skipped++; continue; }
+    const r = await processFile(f);
+    if(r && r._error){ failed++; continue; }
+    FILES.push(r);
+    renderFiles();
+  }
+  if(skipped>0 || failed>0){
+    const m = $("formMsg"); m.className="msg show error";
+    let txt = "";
+    if(skipped>0) txt += (skipped===1?"Doublon ignoré.":skipped+" doublons ignorés.");
+    if(failed>0)  txt += (txt?" ":"") + (failed===1?"1 fichier illisible ignoré.":failed+" fichiers illisibles ignorés.");
+    m.textContent = txt;
+    setTimeout(()=>{ m.className="msg"; }, 4000);
   }
   $("file").value = "";   // permet de re-sélectionner le même fichier / d'en ajouter d'autres
 };
