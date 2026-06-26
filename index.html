@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>OPTA-S · Notes de frais</title>
 <style>
   :root{
@@ -123,7 +126,7 @@
     <button id="btnAgain" class="btn">Déposer d'autres reçus</button>
   </section>
 
-  <footer>OPTA-S · solution interne · v6</footer>
+  <footer>OPTA-S · solution interne · v7</footer>
 </div>
 
 <script>
@@ -322,6 +325,24 @@ function resetForm(){
   $("filebox").textContent="📎 Touche ici pour ajouter une photo ou un fichier";
   refreshSend();
 }
+
+/* ---------- AUTO-VÉRIFICATION DE VERSION (anti-cache GitHub Pages) ----------
+   Au chargement, on récupère la version réellement en ligne (sans cache) et,
+   si elle est plus récente que celle affichée, on recharge automatiquement sur
+   la dernière version. Plus besoin de hard-refresh manuel côté collègues. */
+(async function(){
+  const myV = (document.querySelector("footer")?.textContent.match(/v\d+/) || [])[0];
+  try{
+    const r = await fetch(location.pathname + "?cb=" + Date.now(), { cache: "no-store" });
+    const t = await r.text();
+    const liveV = (t.match(/solution interne · (v\d+)/) || [])[1];
+    if(myV && liveV && liveV !== myV){
+      const u = new URL(location.href);
+      u.searchParams.set("v", liveV);
+      location.replace(u.toString());   // recharge la dernière version (une seule fois)
+    }
+  }catch(e){ /* hors-ligne ou souci réseau : on garde la version actuelle */ }
+})();
 </script>
 </body>
 </html>
