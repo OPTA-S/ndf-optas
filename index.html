@@ -85,7 +85,7 @@
 
     <label>Activité concernée</label>
     <div class="ac">
-      <input id="activite" type="text" placeholder="Tape quelques mots (ex : pendulage septembre)" autocomplete="off">
+      <input id="activite" type="text" placeholder="Tape quelques mots (ex : séminaire octobre)" autocomplete="off">
       <div id="acList" class="ac-list hidden"></div>
     </div>
     <div id="chosen" class="chosen hidden">
@@ -114,7 +114,7 @@
     <button id="btnAgain" class="btn">Déposer d'autres reçus</button>
   </section>
 
-  <footer>OPTA-S · solution interne · v2</footer>
+  <footer>OPTA-S · solution interne · v3</footer>
 </div>
 
 <script>
@@ -196,12 +196,15 @@ $("clearChoice").onclick = ()=>{ CHOSEN=null; hide($("chosen")); $("activite").f
 $("filebox").onclick = ()=> $("file").click();
 $("file").onchange = () => {
   const picked = Array.from($("file").files||[]);
+  let skipped = 0;
   picked.forEach(f=>{
+    // contrôle des doublons : on ignore un fichier déjà présent (même nom + même taille)
+    if(FILES.some(x => x.name===f.name && x.size===f.size)){ skipped++; return; }
     const reader = new FileReader();
     reader.onload = e=>{
       FILES.push({
         b64: e.target.result.split(",")[1],   // base64 sans le préfixe data:
-        mime: f.type, name: f.name,
+        mime: f.type, name: f.name, size: f.size,
         isImage: f.type.startsWith("image/"),
         dataUrl: e.target.result
       });
@@ -209,6 +212,11 @@ $("file").onchange = () => {
     };
     reader.readAsDataURL(f);
   });
+  if(skipped>0){
+    const m = $("formMsg"); m.className="msg show";
+    m.textContent = skipped===1 ? "Doublon ignoré (fichier déjà ajouté)." : skipped+" doublons ignorés (déjà ajoutés).";
+    setTimeout(()=>{ m.className="msg"; }, 3000);
+  }
   $("file").value = "";   // permet de re-sélectionner le même fichier / d'en ajouter d'autres
 };
 
