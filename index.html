@@ -28,6 +28,8 @@
   .btn:disabled{opacity:.5;cursor:default}
   .btn.secondary{background:#fff;color:var(--navy);border:1.5px solid #dfe5ee}
   .hint{font-size:12px;color:var(--grey);margin-top:8px;line-height:1.5}
+  .notice{background:#fdecec;border:2px solid var(--err);border-radius:10px;padding:12px 14px;
+          margin:4px 0 16px;color:var(--err);font-weight:bold;font-size:15px;line-height:1.6}
   .msg{font-size:13px;margin-top:12px;padding:10px 12px;border-radius:8px;display:none}
   .msg.show{display:block}
   .msg.error{background:#fdecec;color:var(--err)}
@@ -83,6 +85,13 @@
   <section id="screen-form" class="card hidden">
     <h1>Bonjour <span id="userName">—</span> 👋</h1>
 
+    <div class="notice">
+      ⚠️ À LIRE AVANT D'ENVOYER<br>
+      • L'activité doit déjà exister dans Odoo pour pouvoir y rattacher des frais.<br>
+      • 10 Mo maximum par fichier.<br>
+      • Formats acceptés : photos (JPEG, PNG, HEIC) et PDF uniquement (pour un Word, exporte-le en PDF).
+    </div>
+
     <label>Activité concernée</label>
     <div class="ac">
       <input id="activite" type="text" placeholder="Tape quelques mots (ex : séminaire octobre)" autocomplete="off">
@@ -114,7 +123,7 @@
     <button id="btnAgain" class="btn">Déposer d'autres reçus</button>
   </section>
 
-  <footer>OPTA-S · solution interne · v5</footer>
+  <footer>OPTA-S · solution interne · v6</footer>
 </div>
 
 <script>
