@@ -43,10 +43,16 @@
   .ac-item .y{color:var(--orange);font-weight:bold;font-size:12px}
   .chosen{background:#eef3fb;border:1.5px solid var(--navy);border-radius:10px;padding:11px 14px;font-size:14px;color:var(--navy);margin-top:6px;display:flex;justify-content:space-between;align-items:center}
   .chosen button{background:none;border:none;color:var(--orange);font-weight:bold;cursor:pointer;font-size:13px}
-  /* file */
+  /* fichiers */
   .filebox{border:2px dashed #cdd6e4;border-radius:12px;padding:22px;text-align:center;color:var(--grey);cursor:pointer}
   .filebox.has{border-color:var(--orange);color:var(--navy)}
-  #preview{max-width:100%;max-height:220px;border-radius:10px;margin-top:10px;display:none}
+  #fileList{margin-top:4px}
+  .fitem{display:flex;align-items:center;gap:10px;background:#f7f9fc;border:1px solid #e4e9f1;border-radius:10px;padding:8px 10px;margin-top:8px}
+  .fitem img{width:42px;height:42px;object-fit:cover;border-radius:7px;flex:0 0 auto}
+  .fitem .fico{width:42px;height:42px;border-radius:7px;background:#eef3fb;color:var(--navy);
+               display:flex;align-items:center;justify-content:center;font-size:20px;flex:0 0 auto}
+  .fitem .fname{flex:1;font-size:13px;color:#3c3c3c;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fitem .frm{background:none;border:none;color:var(--err);font-weight:bold;cursor:pointer;font-size:18px;line-height:1;padding:0 4px}
   .spin{display:inline-block;width:16px;height:16px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:r .8s linear infinite;vertical-align:-3px;margin-right:8px}
   @keyframes r{to{transform:rotate(360deg)}}
   .success-ico{font-size:46px;text-align:center}
@@ -88,10 +94,11 @@
     </div>
     <div class="hint">Commence à taper : les activités correspondantes s'affichent, choisis la bonne (attention à l'année).</div>
 
-    <label>Justificatif (photo ou PDF)</label>
-    <div id="filebox" class="filebox">📎 Touche ici pour prendre une photo ou choisir un fichier</div>
-    <input id="file" type="file" accept="image/*,application/pdf" capture="environment" class="hidden">
-    <img id="preview" alt="aperçu">
+    <label>Justificatifs (photos ou PDF)</label>
+    <div id="filebox" class="filebox">📎 Touche ici pour ajouter une photo ou un fichier</div>
+    <input id="file" type="file" accept="image/*,application/pdf" capture="environment" multiple class="hidden">
+    <div id="fileList"></div>
+    <div class="hint">Tu peux en ajouter plusieurs (plusieurs reçus, un PDF, un mélange…). Ils iront tous sur la même fiche. Pour un fichier Word, exporte-le d'abord en PDF.</div>
 
     <button id="btnSend" class="btn" disabled>Envoyer la note de frais</button>
     <div id="formMsg" class="msg"></div>
@@ -104,25 +111,25 @@
     <h1 style="text-align:center">Note de frais créée</h1>
     <p style="text-align:center;color:var(--grey);font-size:14px" id="doneDetail"></p>
     <a id="ficheLink" class="link" href="#" target="_blank">Ouvrir la fiche dans Odoo →</a>
-    <button id="btnAgain" class="btn">Déposer un autre reçu</button>
+    <button id="btnAgain" class="btn">Déposer d'autres reçus</button>
   </section>
 
-  <footer>OPTA-S · solution interne · v1</footer>
+  <footer>OPTA-S · solution interne · v2</footer>
 </div>
 
 <script>
 /* ===================================================================
-   CONFIG — colle ici les 3 URLs des webhooks n8n (Production URL)
+   CONFIG — URLs des webhooks n8n (Production URL)
    =================================================================== */
 const WEBHOOK_AUTH   = "https://opta-s.app.n8n.cloud/webhook/ndf-auth";    // login
 const WEBHOOK_SEARCH = "https://opta-s.app.n8n.cloud/webhook/ndf-search";  // recherche activité
-const WEBHOOK_SUBMIT = "https://opta-s.app.n8n.cloud/webhook/ndf-submit";  // envoi du reçu
+const WEBHOOK_SUBMIT = "https://opta-s.app.n8n.cloud/webhook/ndf-submit";  // envoi des reçus
 const ODOO_BASE      = "https://odoo18.opta-s.fr";
 /* =================================================================== */
 
 let USER = null;            // { uid, name }
 let CHOSEN = null;          // { id, label, affaire_id }
-let FILE_B64 = null, FILE_MIME = null, FILE_NAME = null;
+let FILES = [];             // [{ b64, mime, name, isImage, dataUrl }]
 
 const $ = id => document.getElementById(id);
 const show = el => el.classList.remove("hidden");
@@ -185,38 +192,61 @@ async function searchActivite(q){
 }
 $("clearChoice").onclick = ()=>{ CHOSEN=null; hide($("chosen")); $("activite").focus(); refreshSend(); };
 
-/* ---------- FICHIER ---------- */
+/* ---------- FICHIERS (multiple) ---------- */
 $("filebox").onclick = ()=> $("file").click();
 $("file").onchange = () => {
-  const f = $("file").files[0]; if(!f) return;
-  FILE_MIME = f.type; FILE_NAME = f.name;
-  $("filebox").classList.add("has"); $("filebox").textContent = "📎 " + f.name;
-  const reader = new FileReader();
-  reader.onload = e => {
-    FILE_B64 = e.target.result.split(",")[1];   // base64 sans le préfixe data:
-    if(f.type.startsWith("image/")){ $("preview").src=e.target.result; $("preview").style.display="block"; }
-    else { $("preview").style.display="none"; }
-    refreshSend();
-  };
-  reader.readAsDataURL(f);
+  const picked = Array.from($("file").files||[]);
+  picked.forEach(f=>{
+    const reader = new FileReader();
+    reader.onload = e=>{
+      FILES.push({
+        b64: e.target.result.split(",")[1],   // base64 sans le préfixe data:
+        mime: f.type, name: f.name,
+        isImage: f.type.startsWith("image/"),
+        dataUrl: e.target.result
+      });
+      renderFiles();
+    };
+    reader.readAsDataURL(f);
+  });
+  $("file").value = "";   // permet de re-sélectionner le même fichier / d'en ajouter d'autres
 };
 
-function refreshSend(){ $("btnSend").disabled = !(CHOSEN && FILE_B64); }
+function renderFiles(){
+  const box = $("fileList"); box.innerHTML = "";
+  FILES.forEach((f,i)=>{
+    const row = document.createElement("div"); row.className = "fitem";
+    const thumb = f.isImage ? `<img src="${f.dataUrl}" alt="">` : `<div class="fico">📄</div>`;
+    row.innerHTML = thumb + `<span class="fname">${f.name}</span>`;
+    const rm = document.createElement("button"); rm.className="frm"; rm.textContent="✕";
+    rm.onclick = ()=>{ FILES.splice(i,1); renderFiles(); };
+    row.appendChild(rm);
+    box.appendChild(row);
+  });
+  $("filebox").classList.toggle("has", FILES.length>0);
+  $("filebox").textContent = FILES.length>0
+    ? `📎 ${FILES.length} justificatif(s) — touche pour en ajouter`
+    : "📎 Touche ici pour ajouter une photo ou un fichier";
+  refreshSend();
+}
+
+function refreshSend(){ $("btnSend").disabled = !(CHOSEN && FILES.length>0); }
 
 /* ---------- ENVOI ---------- */
 $("btnSend").onclick = async () => {
   const msg = $("formMsg"); msg.className="msg";
-  $("btnSend").disabled=true; $("btnSend").innerHTML='<span class="spin"></span>Lecture du reçu…';
+  $("btnSend").disabled=true;
+  $("btnSend").innerHTML='<span class="spin"></span>Lecture de '+FILES.length+' justificatif(s)…';
   try{
     const r = await fetch(WEBHOOK_SUBMIT,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
         uid:USER.uid, name:USER.name,
         activite_id:CHOSEN.id, affaire_id:CHOSEN.affaire_id,
-        photo_base64:FILE_B64, mime:FILE_MIME, filename:FILE_NAME
+        files: FILES.map(f=>({ photo_base64:f.b64, mime:f.mime, filename:f.name }))
       })});
     const data = await r.json();
     if(data && data.ok){
-      $("doneDetail").textContent = data.detail || "Le justificatif a été lu et la ligne ajoutée.";
+      $("doneDetail").textContent = data.detail || (FILES.length+" justificatif(s) lus, lignes ajoutées.");
       $("ficheLink").href = data.fiche_url || (ODOO_BASE+"/odoo");
       hide($("screen-form")); show($("screen-done"));
     } else {
@@ -230,11 +260,12 @@ $("btnSend").onclick = async () => {
 $("btnLogout").onclick = ()=>{ USER=null; resetForm(); hide($("screen-form")); show($("screen-login")); };
 $("btnAgain").onclick  = ()=>{ resetForm(); hide($("screen-done")); show($("screen-form")); };
 function resetForm(){
-  CHOSEN=null; FILE_B64=null; FILE_MIME=null; FILE_NAME=null;
+  CHOSEN=null; FILES=[];
   $("activite").value=""; hide($("chosen")); hide($("acList"));
-  $("file").value=""; $("filebox").classList.remove("has");
-  $("filebox").textContent="📎 Touche ici pour prendre une photo ou choisir un fichier";
-  $("preview").style.display="none"; refreshSend();
+  $("file").value=""; $("fileList").innerHTML="";
+  $("filebox").classList.remove("has");
+  $("filebox").textContent="📎 Touche ici pour ajouter une photo ou un fichier";
+  refreshSend();
 }
 </script>
 </body>
