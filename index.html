@@ -64,6 +64,7 @@
   a.link{display:block;text-align:center;color:var(--orange);font-weight:bold;text-decoration:none;margin-top:14px}
   footer{color:var(--grey);font-size:11px;text-align:center;margin:18px 0}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -126,7 +127,7 @@
     <button id="btnAgain" class="btn">Déposer d'autres reçus</button>
   </section>
 
-  <footer>OPTA-S · solution interne · v7</footer>
+  <footer>OPTA-S · solution interne · v8</footer>
 </div>
 
 <script>
@@ -138,6 +139,21 @@ const WEBHOOK_SEARCH = "https://opta-s.app.n8n.cloud/webhook/ndf-search";  // re
 const WEBHOOK_SUBMIT = "https://opta-s.app.n8n.cloud/webhook/ndf-submit";  // envoi des reçus
 const ODOO_BASE      = "https://odoo18.opta-s.fr";
 /* =================================================================== */
+
+const PDF_COMPRESS_THRESHOLD = 4 * 1024 * 1024;   // > 4 Mo → on TENTE de compresser le PDF en images
+const PDF_OP_TIMEOUT = 8000;                      // garde-temps : si pdf.js traîne, on abandonne et on retombe sur le PDF brut
+/* pdf.js : worker chargé en blob (same-origin) pour éviter les blocages cross-origin */
+let _pdfWorkerReady = null;
+function ensurePdfWorker(){
+  if(!window.pdfjsLib) return Promise.reject(new Error("pdfjs absent"));
+  if(_pdfWorkerReady) return _pdfWorkerReady;
+  const WURL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  _pdfWorkerReady = fetch(WURL).then(r=>r.blob())
+    .then(b=>{ pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(b); })
+    .catch(()=>{ pdfjsLib.GlobalWorkerOptions.workerSrc = WURL; });
+  return _pdfWorkerReady;
+}
+function withTimeout(p, ms){ return Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error("pdf-timeout")), ms))]); }
 
 let USER = null;            // { uid, name }
 let CHOSEN = null;          // { id, label, affaire_id }
@@ -207,12 +223,51 @@ $("clearChoice").onclick = ()=>{ CHOSEN=null; hide($("chosen")); $("activite").f
 /* ---------- FICHIERS (multiple) ---------- */
 $("filebox").onclick = ()=> $("file").click();
 
-/* Ré-encode toute image (y compris HEIC iPhone) en JPEG via canvas, et la redimensionne.
-   → résout les formats refusés par l'IA (HEIC) et allège fortement le poids envoyé.
-   Les PDF passent tels quels. */
-function processFile(f){
+/* Compresseur intégré.
+   - Images (y compris HEIC iPhone) → ré-encodées en JPEG redimensionné.
+   - PDF léger (< 4 Mo) → envoyé natif (un seul justificatif).
+   - PDF lourd (>= 4 Mo) → COMPRESSÉ : rendu page par page en JPEG allégé via pdf.js,
+     ce qui ramène n'importe quel scan sous la limite IA. Repli sur le PDF brut si pdf.js échoue.
+   processFile renvoie un TABLEAU d'éléments (1 pour une image/PDF, N pour un PDF compressé),
+   ou { _error } / { _toobig }. */
+
+function readAsItem(f, mime){
   return new Promise(resolve=>{
-    if(f.type && f.type.startsWith("image/")){
+    const reader = new FileReader();
+    reader.onload = e=>resolve([{ b64:e.target.result.split(",")[1], mime:mime||f.type||"application/pdf",
+                                  name:f.name, size:f.size, isImage:false, dataUrl:e.target.result }]);
+    reader.onerror = ()=>resolve({ _error:f.name });
+    reader.readAsDataURL(f);
+  });
+}
+
+async function pdfToImages(f){
+  await ensurePdfWorker();
+  const buf = await f.arrayBuffer();
+  const pdf = await withTimeout(pdfjsLib.getDocument({ data: buf }).promise, PDF_OP_TIMEOUT);
+  const N = Math.min(pdf.numPages, 20);   // garde-fou : 20 pages max
+  const out = [];
+  for(let i=1; i<=N; i++){
+    const page = await withTimeout(pdf.getPage(i), PDF_OP_TIMEOUT);
+    let vp = page.getViewport({ scale: 1 });
+    const scale = Math.min(2, 1600 / Math.max(vp.width, vp.height));
+    vp = page.getViewport({ scale: scale > 0 ? scale : 1 });
+    const cv = document.createElement("canvas");
+    cv.width = Math.max(1, Math.round(vp.width));
+    cv.height = Math.max(1, Math.round(vp.height));
+    await withTimeout(page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise, PDF_OP_TIMEOUT);
+    const dataUrl = cv.toDataURL("image/jpeg", 0.72);
+    out.push({ b64:dataUrl.split(",")[1], mime:"image/jpeg",
+               name:f.name.replace(/\.[^.]+$/,"")+"_p"+i+".jpg", size:f.size,
+               isImage:true, dataUrl });
+  }
+  return out;
+}
+
+async function processFile(f){
+  // IMAGE → ré-encodage JPEG + redimensionnement
+  if(f.type && f.type.startsWith("image/")){
+    return await new Promise(resolve=>{
       const img = new Image();
       const url = URL.createObjectURL(f);
       img.onload = ()=>{
@@ -224,26 +279,28 @@ function processFile(f){
         cv.getContext("2d").drawImage(img,0,0,w,h);
         const dataUrl = cv.toDataURL("image/jpeg", 0.85);
         URL.revokeObjectURL(url);
-        resolve({ b64:dataUrl.split(",")[1], mime:"image/jpeg",
-                  name:f.name.replace(/\.[^.]+$/,"")+".jpg", size:f.size,
-                  isImage:true, dataUrl });
+        resolve([{ b64:dataUrl.split(",")[1], mime:"image/jpeg",
+                   name:f.name.replace(/\.[^.]+$/,"")+".jpg", size:f.size, isImage:true, dataUrl }]);
       };
       img.onerror = ()=>{ URL.revokeObjectURL(url); resolve({ _error:f.name }); };
       img.src = url;
-    } else {
-      // PDF/autre : pas de ré-encodage possible → on bloque les fichiers trop lourds
-      // (limite IA = 10 Mo/fichier ; on garde une marge).
-      if(f.size > 9*1024*1024){
-        resolve({ _error:f.name, _toobig:true, _mb:(f.size/1048576).toFixed(1) });
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = e=>resolve({ b64:e.target.result.split(",")[1], mime:f.type||"application/pdf",
-                                   name:f.name, size:f.size, isImage:false, dataUrl:e.target.result });
-      reader.onerror = ()=>resolve({ _error:f.name });
-      reader.readAsDataURL(f);
+    });
+  }
+  // PDF
+  const isPdf = (f.type === "application/pdf") || /\.pdf$/i.test(f.name);
+  if(isPdf){
+    if(f.size >= PDF_COMPRESS_THRESHOLD){
+      try{
+        const pages = await pdfToImages(f);
+        if(pages.length) return pages;
+      }catch(e){ /* compression impossible → on tente le PDF brut */ }
     }
-  });
+    if(f.size <= 9*1024*1024) return await readAsItem(f, "application/pdf");
+    return { _error:f.name, _toobig:true, _mb:(f.size/1048576).toFixed(1) };
+  }
+  // autre format
+  if(f.size > 9*1024*1024) return { _error:f.name, _toobig:true, _mb:(f.size/1048576).toFixed(1) };
+  return await readAsItem(f);
 }
 
 $("file").onchange = async () => {
@@ -255,7 +312,7 @@ $("file").onchange = async () => {
     const r = await processFile(f);
     if(r && r._toobig){ tooBig = r; continue; }
     if(r && r._error){ failed++; continue; }
-    FILES.push(r);
+    for(const item of r){ FILES.push(item); }   // r est un tableau (1 image/PDF, N pages compressées)
     renderFiles();
   }
   if(skipped>0 || failed>0 || tooBig){
