@@ -2,11 +2,20 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>OPTA-S · Notes de frais</title>
+<!-- PWA / installable sur téléphone -->
+<meta name="theme-color" content="#002D69">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Notes de frais">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="manifest" href="manifest.json">
 <style>
   :root{
     --orange:#FF6600; --navy:#002D69; --grey:#999999; --bg:#f4f6f9; --card:#ffffff;
@@ -14,7 +23,8 @@
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   body{margin:0;font-family:Arial,"Helvetica Neue",sans-serif;background:var(--bg);color:#3c3c3c;
-       min-height:100vh;display:flex;flex-direction:column;align-items:center}
+       min-height:100vh;display:flex;flex-direction:column;align-items:center;
+       padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
   .wrap{width:100%;max-width:460px;padding:20px}
   header{text-align:center;margin:26px 0 10px}
   header .logo{font-weight:800;letter-spacing:1px;color:var(--navy);font-size:26px}
@@ -127,7 +137,7 @@
     <button id="btnAgain" class="btn">Déposer d'autres reçus</button>
   </section>
 
-  <footer>OPTA-S · solution interne · v8</footer>
+  <footer>OPTA-S · solution interne · v10</footer>
 </div>
 
 <script>
@@ -176,7 +186,7 @@ $("btnLogin").onclick = async () => {
       body:JSON.stringify({login,password})});
     const data = await r.json();
     if(data && data.ok){
-      USER = { uid:data.uid, name:data.name||login };
+      USER = { uid:data.uid, name:data.name||login, login:login };
       $("userName").textContent = USER.name;
       hide($("screen-login")); show($("screen-form"));
     } else {
@@ -355,7 +365,7 @@ $("btnSend").onclick = async () => {
   try{
     const r = await fetch(WEBHOOK_SUBMIT,{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
-        uid:USER.uid, name:USER.name,
+        uid:USER.uid, name:USER.name, login:USER.login,
         activite_id:CHOSEN.id, affaire_id:CHOSEN.affaire_id,
         files: FILES.map(f=>({ photo_base64:f.b64, mime:f.mime, filename:f.name }))
       })});
@@ -400,6 +410,13 @@ function resetForm(){
     }
   }catch(e){ /* hors-ligne ou souci réseau : on garde la version actuelle */ }
 })();
+
+/* ---------- APP INSTALLABLE (service worker, sans cache) ----------
+   Rend la page ajoutable à l'écran d'accueil et ouvrable en plein écran
+   comme une vraie app. Le SW ne stocke rien → aucun risque de vieille version. */
+if("serviceWorker" in navigator){
+  window.addEventListener("load", ()=>{ navigator.serviceWorker.register("sw.js").catch(()=>{}); });
+}
 </script>
 </body>
 </html>
