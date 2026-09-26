@@ -149,6 +149,8 @@
     </div>
 
     <label>Justificatifs (photos ou PDF)</label>
+    <button type="button" id="btnScan" class="btn" style="margin-top:0;margin-bottom:8px;background:var(--navy)">📷 Scanner un reçu</button>
+    <input id="scan" type="file" accept="image/*" capture="environment" class="hidden">
     <div id="filebox" class="filebox">📎 Touche ici pour ajouter une photo ou un fichier</div>
     <input id="file" type="file" accept="image/*,application/pdf" multiple class="hidden">
     <div id="fileList"></div>
@@ -166,6 +168,7 @@
     <div class="hint">Cette note est ajoutée au commentaire des lignes créées dans Odoo.</div>
 
     <button id="btnSend" class="btn" disabled>Envoyer la note de frais</button>
+    <div id="sendHint" class="hint" style="text-align:center;color:var(--orange);font-weight:bold"></div>
     <div id="formMsg" class="msg"></div>
     <button id="btnLogout" class="btn secondary">Se déconnecter</button>
   </section>
@@ -176,10 +179,11 @@
     <h1 style="text-align:center">Note de frais créée</h1>
     <p style="text-align:center;color:var(--grey);font-size:14px" id="doneDetail"></p>
     <a id="ficheLink" class="link" href="#" target="_blank">Ouvrir la fiche dans Odoo →</a>
-    <button id="btnAgain" class="btn">Déposer d'autres reçus</button>
+    <button id="btnAgain" class="btn">Déposer d'autres reçus (même activité)</button>
+    <button id="btnAgainOther" class="btn secondary">Déposer pour une autre activité</button>
   </section>
 
-  <footer>OPTA-S · solution interne · v12</footer>
+  <footer>OPTA-S · solution interne · v13</footer>
 </div>
 
 <script>
@@ -339,6 +343,7 @@ $("btnCreateActivite").onclick = async ()=>{
 
 /* ---------- FICHIERS (multiple) ---------- */
 $("filebox").onclick = ()=> $("file").click();
+$("btnScan").onclick = ()=> $("scan").click();
 
 /* Compresseur intégré.
    - Images (y compris HEIC iPhone) → ré-encodées en JPEG redimensionné.
@@ -381,7 +386,9 @@ async function pdfToImages(f){
   return out;
 }
 
-async function processFile(f){
+async function processFile(f, mode){
+  // mode "scan" : compression « document » (niveaux de gris + contraste, 1600 px, JPEG 0.7) → reçu ~150-300 Ko
+  const SCAN = mode === "scan";
   // IMAGE → ré-encodage JPEG + redimensionnement (avec garde-temps + garde-taille, jamais de blocage silencieux)
   if(f.type && f.type.startsWith("image/")){
     if(f.size > 25*1024*1024) return { _error:f.name, _reason:"photo trop lourde ("+(f.size/1048576).toFixed(0)+" Mo) — réduis la définition dans l'appareil photo" };
@@ -394,16 +401,29 @@ async function processFile(f){
       img.onload = ()=>{
         clearTimeout(to);
         try{
-          const maxDim = 2000;
+          const maxDim = SCAN ? 1600 : 2000;
           let w = img.naturalWidth, h = img.naturalHeight;
           if(!w || !h){ return finish({ _error:f.name, _reason:"image illisible" }); }
           const scale = Math.min(1, maxDim/Math.max(w,h));
           w = Math.max(1, Math.round(w*scale)); h = Math.max(1, Math.round(h*scale));
           const cv = document.createElement("canvas"); cv.width=w; cv.height=h;
-          cv.getContext("2d").drawImage(img,0,0,w,h);
-          const dataUrl = cv.toDataURL("image/jpeg", 0.85);
+          const ctx = cv.getContext("2d");
+          ctx.drawImage(img,0,0,w,h);
+          if(SCAN){
+            // niveaux de gris + contraste renforcé : texte plus net, fichier plus léger
+            const id = ctx.getImageData(0,0,w,h), d = id.data;
+            for(let i=0;i<d.length;i+=4){
+              let g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+              g = (g-128)*1.35 + 140;
+              g = g<0 ? 0 : (g>255 ? 255 : g);
+              d[i]=d[i+1]=d[i+2]=g;
+            }
+            ctx.putImageData(id,0,0);
+          }
+          const dataUrl = cv.toDataURL("image/jpeg", SCAN ? 0.7 : 0.85);
+          const nm = SCAN ? ("scan_"+new Date().toISOString().slice(11,19).replace(/:/g,"")+".jpg") : f.name.replace(/\.[^.]+$/,"")+".jpg";
           finish([{ b64:dataUrl.split(",")[1], mime:"image/jpeg",
-                    name:f.name.replace(/\.[^.]+$/,"")+".jpg", size:f.size, isImage:true, dataUrl }]);
+                    name:nm, size:f.size, isImage:true, dataUrl }]);
         }catch(e){ finish({ _error:f.name, _reason:"photo trop lourde pour l'appareil" }); }
       };
       img.onerror = ()=>{ clearTimeout(to); finish({ _error:f.name, _reason:"format non supporté (essaie en JPEG ou PNG)" }); };
@@ -427,8 +447,11 @@ async function processFile(f){
   return await readAsItem(f);
 }
 
-$("file").onchange = async () => {
-  const picked = Array.from($("file").files||[]);
+$("file").onchange = ()=> handlePicked($("file"), "file");
+$("scan").onchange = ()=> handlePicked($("scan"), "scan");
+
+async function handlePicked(input, mode){
+  const picked = Array.from(input.files||[]);
   if(!picked.length) return;
   const m = $("formMsg");
   // retour visuel immédiat : on montre que la lecture est en cours
@@ -439,7 +462,7 @@ $("file").onchange = async () => {
     // contrôle des doublons : on ignore un fichier déjà présent (même nom + même taille)
     if(FILES.some(x => x.size===f.size && (x.name===f.name || x.name===f.name.replace(/\.[^.]+$/,"")+".jpg"))){ skipped++; continue; }
     let r;
-    try{ r = await processFile(f); }catch(e){ r = { _error:f.name, _reason:"erreur de lecture" }; }
+    try{ r = await processFile(f, mode); }catch(e){ r = { _error:f.name, _reason:"erreur de lecture" }; }
     if(r && r._toobig){ tooBig = r; continue; }
     if(r && r._error){ failed.push(f.name + (r._reason ? " — "+r._reason : "")); continue; }
     for(const item of r){ FILES.push(item); }   // r est un tableau (1 image/PDF, N pages compressées)
@@ -456,8 +479,9 @@ $("file").onchange = async () => {
   } else {
     m.className="msg"; m.textContent = "";
   }
-  $("file").value = "";   // permet de re-sélectionner le même fichier / d'en ajouter d'autres
-};
+  input.value = "";   // permet de re-sélectionner / re-scanner et d'en ajouter d'autres
+  refreshSend();      // met à jour le bouton + le message d'aide (ex. « choisis l'activité »)
+}
 
 function renderFiles(){
   const box = $("fileList"); box.innerHTML = "";
@@ -477,7 +501,18 @@ function renderFiles(){
   refreshSend();
 }
 
-function refreshSend(){ $("btnSend").disabled = !(CHOSEN && FILES.length>0); }
+function refreshSend(){
+  const ok = !!(CHOSEN && FILES.length>0);
+  $("btnSend").disabled = !ok;
+  // jamais de bouton grisé sans explication
+  const hint = $("sendHint");
+  if(hint){
+    hint.textContent = ok ? "" :
+      (!CHOSEN && FILES.length===0) ? "Choisis l'activité et ajoute au moins un justificatif pour envoyer." :
+      (!CHOSEN) ? "⚠️ Choisis l'activité (en haut) pour pouvoir envoyer." :
+      "Ajoute au moins un justificatif pour envoyer.";
+  }
+}
 
 /* ---------- ENVOI ---------- */
 $("btnSend").onclick = async () => {
@@ -506,11 +541,19 @@ $("btnSend").onclick = async () => {
 
 /* ---------- DÉCO / RECOMMENCER ---------- */
 $("btnLogout").onclick = ()=>{ USER=null; resetForm(); hide($("screen-form")); show($("screen-login")); };
-$("btnAgain").onclick  = ()=>{ resetForm(); hide($("screen-done")); show($("screen-form")); };
+// Enchaîner un autre dépôt : on GARDE l'activité (cas le plus courant : plusieurs reçus pour la même activité)
+$("btnAgain").onclick  = ()=>{
+  const keep = CHOSEN;
+  resetForm();
+  if(keep){ CHOSEN = keep; $("chosenLabel").textContent = keep.label; show($("chosen")); }
+  hide($("screen-done")); show($("screen-form")); refreshSend();
+};
+$("btnAgainOther").onclick = ()=>{ resetForm(); hide($("screen-done")); show($("screen-form")); refreshSend(); };
+refreshSend();   // message d'aide affiché dès l'ouverture du formulaire
 function resetForm(){
   CHOSEN=null; FILES=[];
   $("activite").value=""; hide($("chosen")); hide($("acList"));
-  $("file").value=""; $("fileList").innerHTML="";
+  $("file").value=""; $("scan").value=""; $("fileList").innerHTML="";
   $("filebox").classList.remove("has");
   $("filebox").textContent="📎 Touche ici pour ajouter une photo ou un fichier";
   $("note").value=""; CARTE="pro";
