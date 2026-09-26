@@ -179,7 +179,7 @@
     <button id="btnAgain" class="btn">Déposer d'autres reçus</button>
   </section>
 
-  <footer>OPTA-S · solution interne · v11</footer>
+  <footer>OPTA-S · solution interne · v12</footer>
 </div>
 
 <script>
@@ -382,24 +382,31 @@ async function pdfToImages(f){
 }
 
 async function processFile(f){
-  // IMAGE → ré-encodage JPEG + redimensionnement
+  // IMAGE → ré-encodage JPEG + redimensionnement (avec garde-temps + garde-taille, jamais de blocage silencieux)
   if(f.type && f.type.startsWith("image/")){
+    if(f.size > 25*1024*1024) return { _error:f.name, _reason:"photo trop lourde ("+(f.size/1048576).toFixed(0)+" Mo) — réduis la définition dans l'appareil photo" };
     return await new Promise(resolve=>{
       const img = new Image();
       const url = URL.createObjectURL(f);
+      let done = false;
+      const finish = (val)=>{ if(done) return; done=true; try{ URL.revokeObjectURL(url); }catch(e){} resolve(val); };
+      const to = setTimeout(()=>finish({ _error:f.name, _reason:"lecture trop longue (photo trop lourde ou format non supporté)" }), 20000);
       img.onload = ()=>{
-        const maxDim = 2000;
-        let w = img.naturalWidth, h = img.naturalHeight;
-        const scale = Math.min(1, maxDim/Math.max(w,h));
-        w = Math.max(1, Math.round(w*scale)); h = Math.max(1, Math.round(h*scale));
-        const cv = document.createElement("canvas"); cv.width=w; cv.height=h;
-        cv.getContext("2d").drawImage(img,0,0,w,h);
-        const dataUrl = cv.toDataURL("image/jpeg", 0.85);
-        URL.revokeObjectURL(url);
-        resolve([{ b64:dataUrl.split(",")[1], mime:"image/jpeg",
-                   name:f.name.replace(/\.[^.]+$/,"")+".jpg", size:f.size, isImage:true, dataUrl }]);
+        clearTimeout(to);
+        try{
+          const maxDim = 2000;
+          let w = img.naturalWidth, h = img.naturalHeight;
+          if(!w || !h){ return finish({ _error:f.name, _reason:"image illisible" }); }
+          const scale = Math.min(1, maxDim/Math.max(w,h));
+          w = Math.max(1, Math.round(w*scale)); h = Math.max(1, Math.round(h*scale));
+          const cv = document.createElement("canvas"); cv.width=w; cv.height=h;
+          cv.getContext("2d").drawImage(img,0,0,w,h);
+          const dataUrl = cv.toDataURL("image/jpeg", 0.85);
+          finish([{ b64:dataUrl.split(",")[1], mime:"image/jpeg",
+                    name:f.name.replace(/\.[^.]+$/,"")+".jpg", size:f.size, isImage:true, dataUrl }]);
+        }catch(e){ finish({ _error:f.name, _reason:"photo trop lourde pour l'appareil" }); }
       };
-      img.onerror = ()=>{ URL.revokeObjectURL(url); resolve({ _error:f.name }); };
+      img.onerror = ()=>{ clearTimeout(to); finish({ _error:f.name, _reason:"format non supporté (essaie en JPEG ou PNG)" }); };
       img.src = url;
     });
   }
@@ -422,24 +429,32 @@ async function processFile(f){
 
 $("file").onchange = async () => {
   const picked = Array.from($("file").files||[]);
-  let skipped = 0, failed = 0, tooBig = null;
+  if(!picked.length) return;
+  const m = $("formMsg");
+  // retour visuel immédiat : on montre que la lecture est en cours
+  m.className="msg show"; m.textContent = "⏳ Lecture de "+picked.length+" justificatif(s)… (patiente, une photo lourde peut prendre quelques secondes)";
+  $("filebox").textContent = "⏳ Lecture en cours…";
+  let skipped = 0, tooBig = null; const failed = [];
   for(const f of picked){
     // contrôle des doublons : on ignore un fichier déjà présent (même nom + même taille)
     if(FILES.some(x => x.size===f.size && (x.name===f.name || x.name===f.name.replace(/\.[^.]+$/,"")+".jpg"))){ skipped++; continue; }
-    const r = await processFile(f);
+    let r;
+    try{ r = await processFile(f); }catch(e){ r = { _error:f.name, _reason:"erreur de lecture" }; }
     if(r && r._toobig){ tooBig = r; continue; }
-    if(r && r._error){ failed++; continue; }
+    if(r && r._error){ failed.push(f.name + (r._reason ? " — "+r._reason : "")); continue; }
     for(const item of r){ FILES.push(item); }   // r est un tableau (1 image/PDF, N pages compressées)
     renderFiles();
   }
-  if(skipped>0 || failed>0 || tooBig){
-    const m = $("formMsg"); m.className="msg show error";
+  renderFiles();   // restaure le libellé du filebox selon FILES (sort de l'état « Lecture en cours »)
+  if(tooBig || skipped>0 || failed.length){
     let txt = "";
-    if(tooBig)    txt += "« "+tooBig._error+" » trop lourd ("+tooBig._mb+" Mo, max 9 Mo). Prends plutôt une photo du justificatif, ou allège le PDF.";
-    if(skipped>0) txt += (txt?" ":"") + (skipped===1?"Doublon ignoré.":skipped+" doublons ignorés.");
-    if(failed>0)  txt += (txt?" ":"") + (failed===1?"1 fichier illisible ignoré.":failed+" fichiers illisibles ignorés.");
-    m.textContent = txt;
-    setTimeout(()=>{ m.className="msg"; }, 6000);
+    if(tooBig)        txt += "« "+tooBig._error+" » trop lourd ("+tooBig._mb+" Mo, max 9 Mo). Prends plutôt une photo, ou allège le PDF.";
+    if(failed.length) txt += (txt?" ":"") + (failed.length===1 ? "Non ajouté : "+failed[0] : failed.length+" fichiers non ajoutés — "+failed.join(" ; "));
+    if(skipped>0)     txt += (txt?" ":"") + (skipped===1?"Doublon ignoré.":skipped+" doublons ignorés.");
+    m.className="msg show error"; m.textContent = txt;
+    setTimeout(()=>{ m.className="msg"; }, 9000);
+  } else {
+    m.className="msg"; m.textContent = "";
   }
   $("file").value = "";   // permet de re-sélectionner le même fichier / d'en ajouter d'autres
 };
